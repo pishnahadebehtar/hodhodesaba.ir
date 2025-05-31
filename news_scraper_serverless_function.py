@@ -11,8 +11,9 @@ try:
     from feedparser import parse as parse_rss
     from bs4 import BeautifulSoup
     import requests
+    import google.generativeai as genai
 except ImportError as e:
-    raise ImportError(f"Failed to import required packages: {str(e)}. Ensure feedparser, beautifulsoup4, requests, and appwrite are installed.")
+    raise ImportError(f"Failed to import required packages: {str(e)}. Ensure feedparser, beautifulsoup4, requests, google-generativeai, and appwrite are installed.")
 
 from appwrite.client import Client
 from appwrite.services.databases import Databases
@@ -94,20 +95,20 @@ def partial_parse_json(response, context):
     return None
 
 def refine_article_with_ai(original_title, original_summary, full_explanation, feed_name, context):
-    # Enhanced prompt with JSON format specification and example
     prompt = (
         f"You are processing a news article from {feed_name}. "
         f"Based on the provided title, summary, and scraped content, perform the following: "
         f"1. Translate the title (if in English) or regenerate it (if in Persian) to a concise, accurate Persian title (max 255 characters). "
         f"2. Translate the summary (if in English) or regenerate it (if in Persian) to a concise Persian summary (max 100 characters). "
         f"3. Summarize the scraped content to produce a complete and coherent Persian explanation relevant to the title and summary. "
+        f"   - When translating from other languages to Persian, if it's a person or place name, include the original name in parentheses, e.g., رئیس جمهور ترامپ (`Trump`). "
         f"   - The summary must be 1500–2000 characters long, unless the content is insufficient, then use all relevant content. "
         f"   - Ensure the summary ends naturally, not mid-sentence, and covers key details without omitting critical information. "
         f"   - Remove irrelevant parts (e.g., advertisements, navigation menus) and translate to Persian if necessary. "
         f"4. Assign a category in Persian from this list: سیاست, اقتصاد, فناوری, سلامت, ورزش, سرگرمی, جهان, based on the content. "
         f"5. Generate 3-5 relevant Persian tags (e.g., 'هسته‌ای', 'اقتصاد جهانی') based on the content. "
         f"Return a valid JSON object with keys: title (string), summary (string), full_explanation (string), category (string), tags (array of strings). "
-        f"The response must be properly formatted JSON, enclosed in {{}}. If the JSON is malformed or missing required keys, the program will throw an error and skip the article. "
+        f"The response must be properly formatted JSON, enclosed in {{}}, with no markdown code blocks (e.g., ```json). "
         f"Example JSON format:\n"
         f'{{\n'
         f'  "title": "وزیر آفریقای جنوبی اتهامات بی‌اساس را رد کرد",\n'
@@ -119,15 +120,71 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
         f"\n\nOriginal Title: {original_title}\n"
         f"Original Summary: {original_summary}\n"
         f"Scraped Content: {full_explanation}\n\n"
-        f"Output only the JSON object, no additional text."
+        f"Output only the JSON object, no additional text or markdown."
     )
 
-    # OpenRouter API keys
+    # Gemini API Attempt
+    gemini_api_key = "AIzaSyAwlMBrka4Q6GjG4U8UIE6q33BLvKnrBF0"
+    context.log(f"Calling Gemini API for article: {original_title}")
+    start_time = time.time()
+    try:
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        elapsed_time = time.time() - start_time
+        context.log(f"Gemini API response time: {elapsed_time:.2f} seconds")
+        # Clean response to remove markdown or code blocks
+        ai_response = response.text.strip()
+        ai_response = re.sub(r'^```json\s*|\s*```$', '', ai_response).strip()
+        context.log(f"Gemini API raw response (first 500 chars): {ai_response[:500]}")
+        try:
+            refined_data = json.loads(ai_response)
+            tags = refined_data.get('tags', ["خبر", "جهان", feed_name.lower().replace(" ", "_")])
+            if not isinstance(tags, list) or len(tags) < 3 or len(tags) > 5:
+                tags = ["خبر", "جهان", feed_name.lower().replace(" ", "_")]
+            full_explanation = refined_data.get('full_explanation', '')
+            if not full_explanation or len(full_explanation) < 500:
+                context.log(f"Gemini API full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
+                raise ValueError("Invalid full_explanation")
+            context.log("Gemini API succeeded")
+            return {
+                "title": refined_data.get('title', original_title)[:255],
+                "summary": refined_data.get('summary', original_summary)[:100],
+                "full_explanation": full_explanation,
+                "category": refined_data.get('category', "جهان"),
+                "tags": tags
+            }
+        except json.JSONDecodeError:
+            refined_data = partial_parse_json(ai_response, context)
+            if refined_data:
+                tags = refined_data.get('tags', ["خبر", "جهان", feed_name.lower().replace(" ", "_")])
+                if not tags or len(tags) < 3 or len(tags) > 5:
+                    tags = ["خبر", "جهان", feed_name.lower().replace(" ", "_")]
+                full_explanation = refined_data.get('full_explanation', '')
+                if not full_explanation or len(full_explanation) < 500:
+                    context.log(f"Gemini API full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
+                    raise ValueError("Invalid full_explanation")
+                context.log("Gemini API succeeded with partial JSON parsing")
+                return {
+                    "title": refined_data.get('title', original_title)[:255],
+                    "summary": refined_data.get('summary', original_summary)[:100],
+                    "full_explanation": full_explanation,
+                    "category": refined_data.get('category', "جهان"),
+                    "tags": tags
+                }
+            context.log("Gemini API JSON parsing failed. Trying next API.")
+            raise ValueError("JSON parsing failed")
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        context.log(f"Gemini API call failed for '{original_title}': {str(e)}. Response time: {elapsed_time:.2f} seconds. Trying next API.")
+
+    # OpenRouter API Attempts
     openrouter_api_keys = [
-       
+        "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",
+        "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",
+        "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"
     ]
 
-    # Try OpenRouter with each API key
     for idx, api_key in enumerate(openrouter_api_keys, 1):
         openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
         openrouter_headers = {
@@ -159,6 +216,7 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
                 if not full_explanation or len(full_explanation) < 500:
                     context.log(f"OpenRouter (Attempt {idx}) full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
                     continue
+                context.log(f"OpenRouter (Attempt {idx}) succeeded")
                 return {
                     "title": refined_data.get('title', original_title)[:255],
                     "summary": refined_data.get('summary', original_summary)[:100],
@@ -176,9 +234,10 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
                     if not full_explanation or len(full_explanation) < 500:
                         context.log(f"OpenRouter (Attempt {idx}) full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
                         continue
+                    context.log(f"OpenRouter (Attempt {idx}) succeeded with partial JSON parsing")
                     return {
                         "title": refined_data.get('title', original_title)[:255],
-                        "summary": refined_data.get('summary', original_summary)[:100],
+                        "summary": refined_data.get('summary', original_summary)[:255],
                         "full_explanation": full_explanation,
                         "category": refined_data.get('category', "جهان"),
                         "tags": tags
@@ -190,7 +249,7 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
             context.log(f"OpenRouter (Attempt {idx}) API call failed for '{original_title}': {str(e)}. Response time: {elapsed_time:.2f} seconds. Trying next API.")
             continue
 
-    # Final attempt: Aval AI
+    # Aval AI API Attempt
     avalai_api_key = os.environ.get('AVALAI_API_KEY')
     if not avalai_api_key:
         context.log("AVALAI_API_KEY not found. Skipping article.")
@@ -214,9 +273,8 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
         elapsed_time = time.time() - start_time
         context.log(f"Aval AI response time: {elapsed_time:.2f} seconds")
         result = response.json()
-        ai_response = result.get('choices', [{}])[0].get('message', {}).get('content', '{}')
+        ai_response = result.get('choices', [{}])[0].get('message', {}).get('content', '{}').strip()
         context.log(f"Aval AI raw response (first 500 chars): {ai_response[:500]}")
-        ai_response = ai_response.strip().encode('utf-8').decode('utf-8')
         try:
             refined_data = json.loads(ai_response)
             tags = refined_data.get('tags', ["خبر", "جهان", feed_name.lower().replace(" ", "_")])
@@ -226,6 +284,7 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
             if not full_explanation or len(full_explanation) < 500:
                 context.log(f"Aval AI full_explanation invalid or too short ({len(full_explanation)} chars). Skipping article.")
                 return None
+            context.log("Aval AI succeeded")
             return {
                 "title": refined_data.get('title', original_title)[:255],
                 "summary": refined_data.get('summary', original_summary)[:100],
@@ -243,6 +302,7 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
                 if not full_explanation or len(full_explanation) < 500:
                     context.log(f"Aval AI full_explanation invalid or too short ({len(full_explanation)} chars). Skipping article.")
                     return None
+                context.log("Aval AI succeeded with partial JSON parsing")
                 return {
                     "title": refined_data.get('title', original_title)[:255],
                     "summary": refined_data.get('summary', original_summary)[:100],
@@ -257,20 +317,21 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
         context.log(f"Aval AI API call failed for '{original_title}': {str(e)}. Response time: {elapsed_time:.2f} seconds. Skipping article.")
         return None
 
-def fetch_rss_feed(task, context, start_time):
+def fetch_rss_feed(task, context, start_time, databases):
     if time.time() - start_time > 550:
         context.log(f"Approaching 600-second timeout. Skipping task: {task['name']}")
         return None
 
     rss_url = task["url"]
     feed_name = task["name"]
+    task_id = task["$id"]
     context.log(f"Fetching RSS feed for {feed_name}")
     try:
         feed_data = parse_rss(rss_url)
         if not hasattr(feed_data, 'entries') or not feed_data.entries:
             context.log(f"Invalid or empty RSS feed for {feed_name}: No entries found")
             if feed_data and hasattr(feed_data, 'bozo_exception'):
-                context.log(f"RSS parsing error: {str(data.bozo_exception)}")
+                context.log(f"RSS parsing error: {str(feed_data.bozo_exception)}")
             return None
         latest_entry = feed_data.entries[0]
         article_url = latest_entry.get('link', '')
@@ -286,6 +347,17 @@ def fetch_rss_feed(task, context, start_time):
         refined_data = refine_article_with_ai(original_title, original_summary, full_explanation, feed_name, context)
         if not refined_data:
             context.log(f"AI processing failed for {feed_name}. Skipping article.")
+            try:
+                context.log(f"Updating task {feed_name} (ID: {task_id}) isdone to true due to AI processing failure")
+                databases.update_document(
+                    database_id=os.environ['APPWRITE_DATABASE_ID'],
+                    collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID'],
+                    document_id=task_id,
+                    data={"isdone": True}
+                )
+                context.log(f"Updated task {feed_name} isdone to true")
+            except Exception as e:
+                context.log(f"Failed to update task '{feed_name}' isdone: {str(e)}")
             return None
         context.log(f"Found article for {feed_name}: {refined_data['title']}")
         return {
@@ -296,10 +368,21 @@ def fetch_rss_feed(task, context, start_time):
             "category": refined_data["category"],
             "tags": refined_data["tags"],
             "source": feed_name,
-            "task_id": task["$id"]
+            "task_id": task_id
         }
     except Exception as e:
         context.log(f"RSS fetch failed for {feed_name}: {str(e)}")
+        try:
+            context.log(f"Updating task {feed_name} (ID: {task_id}) isdone to true due to RSS fetch failure")
+            databases.update_document(
+                database_id=os.environ['APPWRITE_DATABASE_ID'],
+                collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID'],
+                document_id=task_id,
+                data={"isdone": True}
+            )
+            context.log(f"Updated task {feed_name} isdone to true")
+        except Exception as e:
+            context.log(f"Failed to update task '{feed_name}' isdone: {str(e)}")
         return None
 
 def process_rss_feeds(context, databases, start_time):
@@ -319,12 +402,39 @@ def process_rss_feeds(context, databases, start_time):
         context.log(f"Failed to fetch tasks: {str(e)}")
         return results
 
-    if len(tasks) == 0:
-        context.log("No tasks with isdone: false found")
-        return results
+    # Check if 2 or fewer tasks remain
+    if len(tasks) <= 2:
+        context.log(f"{len(tasks)} tasks with isdone: false. Processing remaining tasks and resetting all tasks.")
+        selected_tasks = tasks  # Process all remaining tasks (0, 1, or 2)
+        # Reset all tasks to isdone: false after processing
+        try:
+            all_tasks_response = databases.list_documents(
+                database_id=os.environ['APPWRITE_DATABASE_ID'],
+                collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID']
+            )
+            all_tasks = all_tasks_response['documents']
+            context.log(f"Found {len(all_tasks)} total tasks to reset")
+            for task in all_tasks:
+                try:
+                    databases.update_document(
+                        database_id=os.environ['APPWRITE_DATABASE_ID'],
+                        collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID'],
+                        document_id=task['$id'],
+                        data={"isdone": False}
+                    )
+                    context.log(f"Reset task {task['name']} to isdone: false")
+                except Exception as e:
+                    context.log(f"Failed to reset task '{task['name']}' isdone: {str(e)}")
+        except Exception as e:
+            context.log(f"Failed to reset tasks: {str(e)}")
+    else:
+        # Select 2 random tasks
+        selected_tasks = random.sample(tasks, 2)
+        context.log(f"Selected 2 tasks: {[task['name'] for task in selected_tasks]}")
 
-    selected_tasks = random.sample(tasks, min(2, len(tasks)))
-    context.log(f"Selected {len(selected_tasks)} tasks: {[task['name'] for task in selected_tasks]}")
+    if not selected_tasks:
+        context.log("No tasks to process. Exiting.")
+        return results
 
     for task in selected_tasks:
         if time.time() - start_time > 550:
@@ -334,7 +444,7 @@ def process_rss_feeds(context, databases, start_time):
         elapsed_time = time.time() - start_time
         context.log(f"Processing task: {task['name']} (Elapsed time: {elapsed_time:.2f} seconds)")
 
-        article = fetch_rss_feed(task, context, start_time)
+        article = fetch_rss_feed(task, context, start_time, databases)
         if not article:
             context.log(f"Skipping task {task['name']}: No valid article retrieved")
             continue
@@ -351,15 +461,38 @@ def process_rss_feeds(context, databases, start_time):
                 queries=[Query.equal("title", title), Query.equal("date", datetime.utcnow().strftime('%Y-%m-%d'))]
             )
             if existing['total'] > 0:
-                context.log(f"Skipping duplicate article from {source}: {title}")
+                context.log(f"Duplicate article found from {source}: {title}. Marking task as isdone: true")
+                try:
+                    databases.update_document(
+                        database_id=os.environ['APPWRITE_DATABASE_ID'],
+                        collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID'],
+                        document_id=task_id,
+                        data={"isdone": True}
+                    )
+                    context.log(f"Updated task {task['name']} (ID: {task_id}) isdone to true due to duplicate")
+                except Exception as e:
+                    context.log(f"Failed to update task '{task['name']}' isdone: {str(e)}")
                 continue
         except Exception as e:
             context.log(f"Failed to check duplicates for '{title}' from {source}: {str(e)}")
+            continue
 
         required_keys = ['title', 'summary', 'full_explanation', 'citations', 'category', 'tags']
         if not all(key in article for key in required_keys):
             context.log(f"Invalid article data from {source}: {json.dumps(article)}")
+            try:
+                context.log(f"Updating task {task['name']} (ID: {task_id}) isdone to true due to invalid article data")
+                databases.update_document(
+                    database_id=os.environ['APPWRITE_DATABASE_ID'],
+                    collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID'],
+                    document_id=task_id,
+                    data={"isdone": True}
+                )
+                context.log(f"Updated task {task['name']} isdone to true")
+            except Exception as e:
+                context.log(f"Failed to update task '{task['name']}' isdone: {str(e)}")
             continue
+
         if article['category'] not in valid_categories:
             context.log(f"Invalid category for '{title}' from {source}: {article['category']}. Setting to 'جهان'")
             article['category'] = 'جهان'
@@ -390,8 +523,75 @@ def process_rss_feeds(context, databases, start_time):
                 data=doc
             )
             context.log(f"Stored article: {title} from {source}")
+
+            # Telegram Posting Logic with Hardcoded IDs
+            token = "8057060028:AAE8id0gMov-gmYnwnRsgnwSBQ4mI6WpK9c"
+            chat_id = "@akhbarevarzeshibaai"
+            citation = article['citations'][0] if article['citations'] else None
+            title_escaped = html.escape(article['title'])
+            summary_escaped = html.escape(article['summary'])
+            full_explanation_escaped = html.escape(article['full_explanation'])
+            tags_escaped = html.escape(', '.join(article['tags']))
+
+            # Structure the message
+            message = (
+                f"<b>عنوان خبر:</b> {title_escaped}\n\n"
+                f"<b>برچسب‌ها:</b> {tags_escaped}\n\n"
+                f"<b>خلاصه خبر:</b> {summary_escaped}\n\n"
+                f"<b>جزئیات کامل:</b> {full_explanation_escaped}\n\n"
+            )
+            if citation:
+                message += f"<a href='{citation}'>بیشتر بخوانید</a>"
+
+            # Truncate to fit Telegram's 4096-character limit
+            if len(message) > 4096:
+                fixed_parts = (
+                    f"<b>عنوان خبر:</b> {title_escaped}\n\n"
+                    f"<b>برچسب‌ها:</b> {tags_escaped}\n\n"
+                    f"<b>خلاصه خبر:</b> {summary_escaped}\n\n"
+                    f"<b>جزئیات کامل:</b> "
+                    + (f"<a href='{citation}'>بیشتر بخوانید</a>" if citation else "")
+                )
+                remaining_chars = 4096 - len(fixed_parts) - 50  # Buffer
+                full_explanation_escaped = truncate_text(full_explanation_escaped, remaining_chars)
+                message = (
+                    f"<b>عنوان خبر:</b> {title_escaped}\n\n"
+                    f"<b>برچسب‌ها:</b> {tags_escaped}\n\n"
+                    f"<b>خلاصه خبر:</b> {summary_escaped}\n\n"
+                    f"<b>جزئیات کامل:</b> {full_explanation_escaped}\n\n"
+                )
+                if citation:
+                    message += f"<a href='{citation}'>بیشتر بخوانید</a>"
+
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+            try:
+                response = requests.post(url, json=payload, timeout=5)
+                if response.status_code == 200:
+                    context.log(f"Sent Telegram message for article: {title}")
+                else:
+                    error_response = response.text
+                    context.log(f"Failed to send Telegram message for article: {title}. Status code: {response.status_code}. Error: {error_response}")
+            except Exception as e:
+                context.log(f"Exception while sending Telegram message for article: {title}. Error: {str(e)}")
+
         except Exception as e:
             context.log(f"Failed to store article '{title}' from {source}: {str(e)}")
+            try:
+                context.log(f"Updating task {task['name']} (ID: {task_id}) isdone to true due to storage failure")
+                databases.update_document(
+                    database_id=os.environ['APPWRITE_DATABASE_ID'],
+                    collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID'],
+                    document_id=task_id,
+                    data={"isdone": True}
+                )
+                context.log(f"Updated task {task['name']} isdone to true")
+            except Exception as e:
+                context.log(f"Failed to update task '{task['name']}' isdone: {str(e)}")
             continue
 
         try:
@@ -410,33 +610,6 @@ def process_rss_feeds(context, databases, start_time):
         results.append(article)
         context.log(f"Processed article from {source}: {json.dumps(article, ensure_ascii=False)}")
 
-    try:
-        context.log("Checking if all tasks are isdone: true")
-        all_tasks_response = databases.list_documents(
-            database_id=os.environ['APPWRITE_DATABASE_ID'],
-            collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID'],
-            queries=[Query.equal("isdone", False)]
-        )
-        if all_tasks_response['total'] == 0:
-            context.log("All tasks are isdone: true. Resetting all to isdone: false")
-            all_tasks = databases.list_documents(
-                database_id=os.environ['APPWRITE_DATABASE_ID'],
-                collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID']
-            )['documents']
-            for task in all_tasks:
-                try:
-                    databases.update_document(
-                        database_id=os.environ['APPWRITE_DATABASE_ID'],
-                        collection_id=os.environ['APPWRITE_SCRAPE_TASKS_COLLECTION_ID'],
-                        document_id=task['$id'],
-                        data={"isdone": False}
-                    )
-                    context.log(f"Reset task {task['name']} to isdone: false")
-                except Exception as e:
-                    context.log(f"Failed to reset task '{task['name']}' isdone: {str(e)}")
-    except Exception as e:
-        context.log(f"Failed to check or reset tasks: {str(e)}")
-
     return results
 
 def main(context):
@@ -453,11 +626,12 @@ def main(context):
         client.set_key(os.environ['APPWRITE_API_KEY'])
         databases = Databases(client)
 
-        context.log("Verifying dependencies: feedparser, beautifulsoup4, requests, appwrite")
+        context.log("Verifying dependencies: feedparser, beautifulsoup4, requests, google-generativeai, appwrite")
         try:
             import feedparser
             import bs4
             import requests
+            import google.generativeai
             import appwrite
             context.log("Dependencies loaded successfully")
         except ImportError as e:
