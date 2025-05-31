@@ -124,89 +124,21 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
     )
 
     # Gemini API Attempt
-    gemini_api_key = "AIzaSyAwlMBrka4Q6GjG4U8UIE6q33BLvKnrBF0"
-    context.log(f"Calling Gemini API for article: {original_title}")
-    start_time = time.time()
-    try:
-        genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
-        elapsed_time = time.time() - start_time
-        context.log(f"Gemini API response time: {elapsed_time:.2f} seconds")
-        # Clean response to remove markdown or code blocks
-        ai_response = response.text.strip()
-        ai_response = re.sub(r'^```json\s*|\s*```$', '', ai_response).strip()
-        context.log(f"Gemini API raw response (first 500 chars): {ai_response[:500]}")
-        try:
-            refined_data = json.loads(ai_response)
-            tags = refined_data.get('tags', ["خبر", "جهان", feed_name.lower().replace(" ", "_")])
-            if not isinstance(tags, list) or len(tags) < 3 or len(tags) > 5:
-                tags = ["خبر", "جهان", feed_name.lower().replace(" ", "_")]
-            full_explanation = refined_data.get('full_explanation', '')
-            if not full_explanation or len(full_explanation) < 500:
-                context.log(f"Gemini API full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
-                raise ValueError("Invalid full_explanation")
-            context.log("Gemini API succeeded")
-            return {
-                "title": refined_data.get('title', original_title)[:255],
-                "summary": refined_data.get('summary', original_summary)[:100],
-                "full_explanation": full_explanation,
-                "category": refined_data.get('category', "جهان"),
-                "tags": tags
-            }
-        except json.JSONDecodeError:
-            refined_data = partial_parse_json(ai_response, context)
-            if refined_data:
-                tags = refined_data.get('tags', ["خبر", "جهان", feed_name.lower().replace(" ", "_")])
-                if not tags or len(tags) < 3 or len(tags) > 5:
-                    tags = ["خبر", "جهان", feed_name.lower().replace(" ", "_")]
-                full_explanation = refined_data.get('full_explanation', '')
-                if not full_explanation or len(full_explanation) < 500:
-                    context.log(f"Gemini API full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
-                    raise ValueError("Invalid full_explanation")
-                context.log("Gemini API succeeded with partial JSON parsing")
-                return {
-                    "title": refined_data.get('title', original_title)[:255],
-                    "summary": refined_data.get('summary', original_summary)[:100],
-                    "full_explanation": full_explanation,
-                    "category": refined_data.get('category', "جهان"),
-                    "tags": tags
-                }
-            context.log("Gemini API JSON parsing failed. Trying next API.")
-            raise ValueError("JSON parsing failed")
-    except Exception as e:
-        elapsed_time = time.time() - start_time
-        context.log(f"Gemini API call failed for '{original_title}': {str(e)}. Response time: {elapsed_time:.2f} seconds. Trying next API.")
-
-    # OpenRouter API Attempts
-    openrouter_api_keys = [
-        "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",
-        "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",
-        "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"
-    ]
-
-    for idx, api_key in enumerate(openrouter_api_keys, 1):
-        openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
-        openrouter_headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
-        openrouter_payload = {
-            "model": "meta-llama/llama-4-maverick:free",
-            "messages": [{"role": "user", "content": prompt}]
-        }
-
-        context.log(f"Calling OpenRouter API (Attempt {idx}) for article: {original_title}")
+    gemini_api_key = os.environ.get('GEMINI_API_KEY')
+    if not gemini_api_key:
+        context.log("GEMINI_API_KEY not found. Skipping Gemini API.")
+    else:
+        context.log(f"Calling Gemini API for article: {original_title}")
         start_time = time.time()
         try:
-            response = requests.post(openrouter_url, headers=openrouter_headers, json=openrouter_payload, timeout=5)
-            response.raise_for_status()
+            genai.configure(api_key=gemini_api_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
             elapsed_time = time.time() - start_time
-            context.log(f"OpenRouter (Attempt {idx}) response time: {elapsed_time:.2f} seconds")
-            result = response.json()
-            ai_response = result.get('choices', [{}])[0].get('message', {}).get('content', '{}')
-            context.log(f"OpenRouter (Attempt {idx}) raw response (first 500 chars): {ai_response[:500]}")
-            ai_response = ai_response.strip().encode('utf-8').decode('utf-8')
+            context.log(f"Gemini API response time: {elapsed_time:.2f} seconds")
+            ai_response = response.text.strip()
+            ai_response = re.sub(r'^```json\s*|\s*```$', '', ai_response).strip()
+            context.log(f"Gemini API raw response (first 500 chars): {ai_response[:500]}")
             try:
                 refined_data = json.loads(ai_response)
                 tags = refined_data.get('tags', ["خبر", "جهان", feed_name.lower().replace(" ", "_")])
@@ -214,9 +146,9 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
                     tags = ["خبر", "جهان", feed_name.lower().replace(" ", "_")]
                 full_explanation = refined_data.get('full_explanation', '')
                 if not full_explanation or len(full_explanation) < 500:
-                    context.log(f"OpenRouter (Attempt {idx}) full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
-                    continue
-                context.log(f"OpenRouter (Attempt {idx}) succeeded")
+                    context.log(f"Gemini API full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
+                    raise ValueError("Invalid full_explanation")
+                context.log("Gemini API succeeded")
                 return {
                     "title": refined_data.get('title', original_title)[:255],
                     "summary": refined_data.get('summary', original_summary)[:100],
@@ -232,22 +164,96 @@ def refine_article_with_ai(original_title, original_summary, full_explanation, f
                         tags = ["خبر", "جهان", feed_name.lower().replace(" ", "_")]
                     full_explanation = refined_data.get('full_explanation', '')
                     if not full_explanation or len(full_explanation) < 500:
-                        context.log(f"OpenRouter (Attempt {idx}) full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
-                        continue
-                    context.log(f"OpenRouter (Attempt {idx}) succeeded with partial JSON parsing")
+                        context.log(f"Gemini API full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
+                        raise ValueError("Invalid full_explanation")
+                    context.log("Gemini API succeeded with partial JSON parsing")
                     return {
                         "title": refined_data.get('title', original_title)[:255],
-                        "summary": refined_data.get('summary', original_summary)[:255],
+                        "summary": refined_data.get('summary', original_summary)[:100],
                         "full_explanation": full_explanation,
                         "category": refined_data.get('category', "جهان"),
                         "tags": tags
                     }
-                context.log(f"OpenRouter (Attempt {idx}) JSON parsing failed. Trying next API.")
-                continue
+                context.log("Gemini API JSON parsing failed. Trying next API.")
+                raise ValueError("JSON parsing failed")
         except Exception as e:
             elapsed_time = time.time() - start_time
-            context.log(f"OpenRouter (Attempt {idx}) API call failed for '{original_title}': {str(e)}. Response time: {elapsed_time:.2f} seconds. Trying next API.")
-            continue
+            context.log(f"Gemini API call failed for '{original_title}': {str(e)}. Response time: {elapsed_time:.2f} seconds. Trying next API.")
+
+    # OpenRouter API Attempts
+    openrouter_api_keys = [
+        os.environ.get('OPENROUTER_API_KEY_1'),
+        os.environ.get('OPENROUTER_API_KEY_2'),
+        os.environ.get('OPENROUTER_API_KEY_3')
+    ]
+    openrouter_api_keys = [key for key in openrouter_api_keys if key]  # Remove None values
+
+    if not openrouter_api_keys:
+        context.log("No OPENROUTER_API_KEYs found. Skipping OpenRouter API.")
+    else:
+        for idx, api_key in enumerate(openrouter_api_keys, 1):
+            openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
+            openrouter_headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+            openrouter_payload = {
+                "model": "meta-llama/llama-4-maverick:free",
+                "messages": [{"role": "user", "content": prompt}]
+            }
+
+            context.log(f"Calling OpenRouter API (Attempt {idx}) for article: {original_title}")
+            start_time = time.time()
+            try:
+                response = requests.post(openrouter_url, headers=openrouter_headers, json=openrouter_payload, timeout=5)
+                response.raise_for_status()
+                elapsed_time = time.time() - start_time
+                context.log(f"OpenRouter (Attempt {idx}) response time: {elapsed_time:.2f} seconds")
+                result = response.json()
+                ai_response = result.get('choices', [{}])[0].get('message', {}).get('content', '{}')
+                context.log(f"OpenRouter (Attempt {idx}) raw response (first 500 chars): {ai_response[:500]}")
+                ai_response = ai_response.strip().encode('utf-8').decode('utf-8')
+                try:
+                    refined_data = json.loads(ai_response)
+                    tags = refined_data.get('tags', ["خبر", "جهان", feed_name.lower().replace(" ", "_")])
+                    if not isinstance(tags, list) or len(tags) < 3 or len(tags) > 5:
+                        tags = ["خبر", "جهان", feed_name.lower().replace(" ", "_")]
+                    full_explanation = refined_data.get('full_explanation', '')
+                    if not full_explanation or len(full_explanation) < 500:
+                        context.log(f"OpenRouter (Attempt {idx}) full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
+                        continue
+                    context.log(f"OpenRouter (Attempt {idx}) succeeded")
+                    return {
+                        "title": refined_data.get('title', original_title)[:255],
+                        "summary": refined_data.get('summary', original_summary)[:100],
+                        "full_explanation": full_explanation,
+                        "category": refined_data.get('category', "جهان"),
+                        "tags": tags
+                    }
+                except json.JSONDecodeError:
+                    refined_data = partial_parse_json(ai_response, context)
+                    if refined_data:
+                        tags = refined_data.get('tags', ["خبر", "جهان", feed_name.lower().replace(" ", "_")])
+                        if not tags or len(tags) < 3 or len(tags) > 5:
+                            tags = ["خبر", "جهان", feed_name.lower().replace(" ", "_")]
+                        full_explanation = refined_data.get('full_explanation', '')
+                        if not full_explanation or len(full_explanation) < 500:
+                            context.log(f"OpenRouter (Attempt {idx}) full_explanation invalid or too short ({len(full_explanation)} chars). Trying next API.")
+                            continue
+                        context.log(f"OpenRouter (Attempt {idx}) succeeded with partial JSON parsing")
+                        return {
+                            "title": refined_data.get('title', original_title)[:255],
+                            "summary": refined_data.get('summary', original_summary)[:100],
+                            "full_explanation": full_explanation,
+                            "category": refined_data.get('category', "جهان"),
+                            "tags": tags
+                        }
+                    context.log(f"OpenRouter (Attempt {idx}) JSON parsing failed. Trying next API.")
+                    continue
+            except Exception as e:
+                elapsed_time = time.time() - start_time
+                context.log(f"OpenRouter (Attempt {idx}) API call failed for '{original_title}': {str(e)}. Response time: {elapsed_time:.2f} seconds. Trying next API.")
+                continue
 
     # Aval AI API Attempt
     avalai_api_key = os.environ.get('AVALAI_API_KEY')
@@ -402,11 +408,9 @@ def process_rss_feeds(context, databases, start_time):
         context.log(f"Failed to fetch tasks: {str(e)}")
         return results
 
-    # Check if 2 or fewer tasks remain
     if len(tasks) <= 2:
         context.log(f"{len(tasks)} tasks with isdone: false. Processing remaining tasks and resetting all tasks.")
-        selected_tasks = tasks  # Process all remaining tasks (0, 1, or 2)
-        # Reset all tasks to isdone: false after processing
+        selected_tasks = tasks
         try:
             all_tasks_response = databases.list_documents(
                 database_id=os.environ['APPWRITE_DATABASE_ID'],
@@ -428,7 +432,6 @@ def process_rss_feeds(context, databases, start_time):
         except Exception as e:
             context.log(f"Failed to reset tasks: {str(e)}")
     else:
-        # Select 2 random tasks
         selected_tasks = random.sample(tasks, 2)
         context.log(f"Selected 2 tasks: {[task['name'] for task in selected_tasks]}")
 
@@ -524,36 +527,18 @@ def process_rss_feeds(context, databases, start_time):
             )
             context.log(f"Stored article: {title} from {source}")
 
-            # Telegram Posting Logic with Hardcoded IDs
-            token = "8057060028:AAE8id0gMov-gmYnwnRsgnwSBQ4mI6WpK9c"
-            chat_id = "@akhbarevarzeshibaai"
-            citation = article['citations'][0] if article['citations'] else None
-            title_escaped = html.escape(article['title'])
-            summary_escaped = html.escape(article['summary'])
-            full_explanation_escaped = html.escape(article['full_explanation'])
-            tags_escaped = html.escape(', '.join(article['tags']))
+            # Telegram Posting Logic
+            telegram_token = os.environ.get('TELEGRAM_TOKEN')
+            telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+            if not telegram_token or not telegram_chat_id:
+                context.log("TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not found. Skipping Telegram posting.")
+            else:
+                citation = article['citations'][0] if article['citations'] else None
+                title_escaped = html.escape(article['title'])
+                summary_escaped = html.escape(article['summary'])
+                full_explanation_escaped = html.escape(article['full_explanation'])
+                tags_escaped = html.escape(', '.join(article['tags']))
 
-            # Structure the message
-            message = (
-                f"<b>عنوان خبر:</b> {title_escaped}\n\n"
-                f"<b>برچسب‌ها:</b> {tags_escaped}\n\n"
-                f"<b>خلاصه خبر:</b> {summary_escaped}\n\n"
-                f"<b>جزئیات کامل:</b> {full_explanation_escaped}\n\n"
-            )
-            if citation:
-                message += f"<a href='{citation}'>بیشتر بخوانید</a>"
-
-            # Truncate to fit Telegram's 4096-character limit
-            if len(message) > 4096:
-                fixed_parts = (
-                    f"<b>عنوان خبر:</b> {title_escaped}\n\n"
-                    f"<b>برچسب‌ها:</b> {tags_escaped}\n\n"
-                    f"<b>خلاصه خبر:</b> {summary_escaped}\n\n"
-                    f"<b>جزئیات کامل:</b> "
-                    + (f"<a href='{citation}'>بیشتر بخوانید</a>" if citation else "")
-                )
-                remaining_chars = 4096 - len(fixed_parts) - 50  # Buffer
-                full_explanation_escaped = truncate_text(full_explanation_escaped, remaining_chars)
                 message = (
                     f"<b>عنوان خبر:</b> {title_escaped}\n\n"
                     f"<b>برچسب‌ها:</b> {tags_escaped}\n\n"
@@ -563,21 +548,40 @@ def process_rss_feeds(context, databases, start_time):
                 if citation:
                     message += f"<a href='{citation}'>بیشتر بخوانید</a>"
 
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML"
-            }
-            try:
-                response = requests.post(url, json=payload, timeout=5)
-                if response.status_code == 200:
-                    context.log(f"Sent Telegram message for article: {title}")
-                else:
-                    error_response = response.text
-                    context.log(f"Failed to send Telegram message for article: {title}. Status code: {response.status_code}. Error: {error_response}")
-            except Exception as e:
-                context.log(f"Exception while sending Telegram message for article: {title}. Error: {str(e)}")
+                if len(message) > 4096:
+                    fixed_parts = (
+                        f"<b>عنوان خبر:</b> {title_escaped}\n\n"
+                        f"<b>برچسب‌ها:</b> {tags_escaped}\n\n"
+                        f"<b>خلاصه خبر:</b> {summary_escaped}\n\n"
+                        f"<b>جزئیات کامل:</b> "
+                        + (f"<a href='{citation}'>بیشتر بخوانید</a>" if citation else "")
+                    )
+                    remaining_chars = 4096 - len(fixed_parts) - 50
+                    full_explanation_escaped = truncate_text(full_explanation_escaped, remaining_chars)
+                    message = (
+                        f"<b>عنوان خبر:</b> {title_escaped}\n\n"
+                        f"<b>برچسب‌ها:</b> {tags_escaped}\n\n"
+                        f"<b>خلاصه خبر:</b> {summary_escaped}\n\n"
+                        f"<b>جزئیات کامل:</b> {full_explanation_escaped}\n\n"
+                    )
+                    if citation:
+                        message += f"<a href='{citation}'>بیشتر بخوانید</a>"
+
+                url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
+                payload = {
+                    "chat_id": telegram_chat_id,
+                    "text": message,
+                    "parse_mode": "HTML"
+                }
+                try:
+                    response = requests.post(url, json=payload, timeout=5)
+                    if response.status_code == 200:
+                        context.log(f"Sent Telegram message for article: {title}")
+                    else:
+                        error_response = response.text
+                        context.log(f"Failed to send Telegram message for article: {title}. Status code: {response.status_code}. Error: {error_response}")
+                except Exception as e:
+                    context.log(f"Exception while sending Telegram message for article: {title}. Error: {str(e)}")
 
         except Exception as e:
             context.log(f"Failed to store article '{title}' from {source}: {str(e)}")
